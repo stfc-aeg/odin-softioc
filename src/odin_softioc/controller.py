@@ -140,8 +140,8 @@ class SoftIocController():
         """
         while True:
             self.pv_task_count.set(self.background_task_counter)
-            self.pv_task_interval.set(self.background_task_interval)
-            self.pv_task_enable.set(self.background_task_enable)
+            self.pv_task_interval.set(self.background_task_interval, process=False)
+            self.pv_task_enable.set(self.background_task_enable, process=False)
             await asyncio.sleep(0.1)
 
     def get(self, path):
@@ -212,6 +212,7 @@ class SoftIocController():
         :param enable: boolean enable value
         """
         enable = bool(enable)
+        logging.debug("Setting background task enable to %s", enable)
 
         if enable != self.background_task_enable:
             if enable:
