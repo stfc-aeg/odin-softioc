@@ -12,7 +12,9 @@ import time
 
 import tornado
 from odin._version import get_versions
-from odin.adapters.parameter_tree import ParameterTree, ParameterTreeError
+#from odin.adapters.parameter_tree import ParameterTree, ParameterTreeError
+from .pv_parameter_tree import PvParameterAccessor, PvParameterTree, ParameterTreeError
+
 from softioc import asyncio_dispatcher, builder, softioc
 from tornado.ioloop import IOLoop, PeriodicCallback
 
@@ -53,21 +55,27 @@ class SoftIocController():
         # Set the background task counter to zero
         self.background_task_counter = 0
 
+        logging.debug("Setting IOC device prefix to %s", self.ioc_device_prefix)
+        builder.SetDeviceName(self.ioc_device_prefix)
+
         # Build a parameter tree for the background task
-        self.bg_task_tree = ParameterTree({
+        self.bg_task_tree = PvParameterTree({
             'task_count': (lambda: self.background_task_counter, None),
             'enable': (lambda: self.background_task_enable, self.set_task_enable),
             'interval': (lambda: self.background_task_interval, self.set_task_interval),
         })
 
         # Store all information in a parameter tree
-        self.param_tree = ParameterTree({
+        self.param_tree = PvParameterTree({
+            'task_count': PvParameterAccessor(
+                'task_count', "BG-TASK-COUNT", initial_value=0, param_type=int
+            ),
             'odin_version': version_info['version'],
             'tornado_version': tornado.version,
             'server_uptime': (self.get_server_uptime, None),
             'background_task': self.bg_task_tree,
             'ioc_device_prefix': self.ioc_device_prefix,
-        })
+        }, builder)
 
     def initialize(self, adapters):
         """Initialize the controller.
@@ -81,25 +89,25 @@ class SoftIocController():
         logging.debug("Initializing soft IOC controller")
 
         # Set the IOC device record prefix
-        logging.debug("Setting IOC device prefix to %s", self.ioc_device_prefix)
-        builder.SetDeviceName(self.ioc_device_prefix)
+        # logging.debug("Setting IOC device prefix to %s", self.ioc_device_prefix)
+        # builder.SetDeviceName(self.ioc_device_prefix)
 
-        # Create some PV records matching the background task parameters. For adapter-local PVs
-        # this could readily be done in the constructor. It is done here as this would be where
-        # PV records could be dynamically built based on the parameter trees of other adapters
-        # loaded into the application.
+        # # Create some PV records matching the background task parameters. For adapter-local PVs
+        # # this could readily be done in the constructor. It is done here as this would be where
+        # # PV records could be dynamically built based on the parameter trees of other adapters
+        # # loaded into the application.
 
-        self.pv_task_count = builder.aIn(
-            'BG-TASK-COUNT', initial_value=self.background_task_counter
-        )
-        self.pv_task_interval = builder.aOut(
-            'BG-TASK-INTERVAL', initial_value=self.background_task_interval,
-            on_update=self.set_task_interval
-        )
-        self.pv_task_enable = builder.boolOut(
-            'BG-TASK-ENABLE', initial_value=self.background_task_enable,
-            on_update=self.set_task_enable
-        )
+        # self.pv_task_count = builder.aIn(
+        #     'BG-TASK-COUNT', initial_value=self.background_task_counter
+        # )
+        # self.pv_task_interval = builder.aOut(
+        #     'BG-TASK-INTERVAL', initial_value=self.background_task_interval,
+        #     on_update=self.set_task_interval
+        # )
+        # self.pv_task_enable = builder.boolOut(
+        #     'BG-TASK-ENABLE', initial_value=self.background_task_enable,
+        #     on_update=self.set_task_enable
+        # )
 
         # Load record database
         builder.LoadDatabase()
@@ -139,9 +147,9 @@ class SoftIocController():
         that may be modified by requests to the adapter.
         """
         while True:
-            self.pv_task_count.set(self.background_task_counter)
-            self.pv_task_interval.set(self.background_task_interval, process=False)
-            self.pv_task_enable.set(self.background_task_enable, process=False)
+            # self.pv_task_count.set(self.background_task_counter)
+            # self.pv_task_interval.set(self.background_task_interval, process=False)
+            # self.pv_task_enable.set(self.background_task_enable, process=False)
             await asyncio.sleep(0.1)
 
     def get(self, path):
@@ -257,3 +265,4 @@ class SoftIocController():
             )
 
         self.background_task_counter += 1
+        self.param_tree.task_count += 1
