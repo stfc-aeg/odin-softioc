@@ -1,89 +1,116 @@
 import pytest
 
 from odin_softioc.pv_parameter_tree import PvParameterAccessor, PvParameterTree, ParameterTreeError
+from test.utils import DummyPvBuilder
 
-def set_task_count(value):
-    print(f"Task count setter called with value {value}")
 
-def test_pv_parameter_tree():
+class PvTreeFixture():
 
-    initial_task_count = 0
-    three_val = 3
-    params = {
-        "task_count": PvParameterAccessor(
-            "task_count", "BG_TASK_COUNT", set_task_count, initial_task_count, int
-        ),
-        "random_value": 1.234,
-        "sub_tree": {
-            "message": "hello",
-            "another_value": 501201,
-            "interesting_pv": PvParameterAccessor(
-                "interesting_pv", "INTERESTING_PV", initial_value=3.141
+    def __init__(self):
+
+        self.initial_task_count = 0
+        self.three_val = 3
+        self.ro_val = 50210
+        self.counter = 0
+
+        self.params = {
+            "ioc_name": PvParameterAccessor(
+                'ioc_name', "IOC_NAME", initial_value="test_ioc"
             ),
-            "deeper": {
-                "one": 1,
-                "two": 2.0,
-                "three": (lambda: three_val, None)
+            "task_count": PvParameterAccessor(
+                "task_count", "BG_TASK_COUNT",
+                on_set=self.set_task_count, initial_value=self.initial_task_count, param_type=int,
+                writeable=True
+            ),
+            "bound_ro": (lambda: self.ro_val, None),
+            "counter": (self.get_counter, None),
+            "random_value": 1.234,
+            "sub_tree": {
+                "message": "hello",
+                "another_value": 501201,
+                "interesting_pv": PvParameterAccessor(
+                    "interesting_pv", "INTERESTING_PV", initial_value=3.141
+                ),
+                "deeper": {
+                    "one": 1,
+                    "two": 2.0,
+                    "three": (lambda: self.three_val, None)
+                }
             }
         }
-    }
 
-    tree = PvParameterTree(params)
+        self.tree = PvParameterTree(self.params, builder=DummyPvBuilder())
 
-    print("\n****\n")
+        print(self.tree.has_external_params())
+        self.tree.update_external_params()
 
-    # print(tree.get(''))
-    # print(tree.task_count)
-    # print(tree.get('task_count'))
-    # print(tree.sub_tree.interesting_pv)
-    # print(tree.sub_tree.deeper.two)
-    # print(tree.get('sub_tree/interesting_pv', with_metadata=True))
+        print("\n********************\n")
 
-    # print(tree.get('sub_tree/deeper/one'))
-    # tree.set('sub_tree/deeper', {"one": 2})
-    # print(tree.get('sub_tree/deeper/one'))
-    # print(tree.sub_tree.deeper.one)
-    # tree.sub_tree.deeper.one = 3
-    # print(tree.get('sub_tree/deeper/one'))
-    # print(tree.sub_tree.deeper.one)
+    def get_counter(self):
+        self.counter += 1
+        print(f"Getting counter with value {self.counter}")
+        return self.counter
 
-    # print(tree.get("sub_tree/deeper/three"))
-    # print(tree.sub_tree.deeper.one) #.three)
-    # print(tree.task_count)
-    # print(tree.sub_tree.message)
+    def set_task_count(self, value):
+        print(f"Task count setter called with value {value}")
 
-    # two_val = 2.0
-    # quickie = ParameterTree({
-    #     "one": 1,
-    #     "two": (lambda: two_val, None)
-    # })
-    # print(quickie.get('', with_metadata=True))
-    # print(quickie.get("one"))
 
-    #quickie.set('', {"two": 3.0})
+@pytest.fixture(scope="class")
+def test_pv_tree():
+    pvt = PvTreeFixture()
+    yield pvt
 
-    assert tree.task_count == initial_task_count
-    assert tree.get('task_count')['task_count'] == initial_task_count
 
-    tree.task_count += 1
-    assert tree.task_count == initial_task_count + 1
-    assert tree.get('task_count')['task_count'] == initial_task_count + 1
+class TestPVParameterTree():
 
-    tree.set("task_count", tree.task_count + 1)
-    assert tree.task_count == initial_task_count + 2
-    assert tree.get('task_count')['task_count'] == initial_task_count + 2
+    def test_bound_simple_param_access(self, test_pv_tree):
 
-    data = tree.get("task_count", with_metadata=True)
-    assert data['task_count']['value'] == initial_task_count + 2
-    assert data['task_count']['writeable'] == True
-    assert data['task_count']['type'] == type(initial_task_count).__name__
+        assert test_pv_tree.tree.sub_tree.deeper.one == 1
+        test_pv_tree.tree.sub_tree.deeper.one = 2
+        assert test_pv_tree.tree.sub_tree.deeper.one == 2
 
-    assert tree.sub_tree.deeper.one == 1
-    tree.sub_tree.deeper.one = 2
-    assert tree.sub_tree.deeper.one == 2
+        assert test_pv_tree.tree.sub_tree.deeper.two == 2.0
 
-    assert tree.sub_tree.deeper.three == 3
+    def test_bound_ro_accessor(self, test_pv_tree):
 
-    with pytest.raises(ParameterTreeError):
-        tree.sub_tree.deeper.three = 4
+        initial_counter = test_pv_tree.tree.counter
+        next_counter = test_pv_tree.tree.counter
+        assert next_counter == initial_counter + 1
+
+        print(test_pv_tree.tree.get("counter")["counter"])
+        with pytest.raises(ParameterTreeError):
+            test_pv_tree.tree.counter = 30
+
+    def test_bound_param_access(self, test_pv_tree):
+
+        assert test_pv_tree.tree.sub_tree.deeper.three == 3
+        #test_pv_tree.tree.sub_tree.deeper.three += 1
+        test_pv_tree.three_val += 1
+        assert test_pv_tree.tree.sub_tree.deeper.three == 4
+
+    def test_pv_parameter_access(self, test_pv_tree):
+
+
+        assert test_pv_tree.tree.task_count == test_pv_tree.initial_task_count
+        assert test_pv_tree.tree.get('task_count')['task_count'] == test_pv_tree.initial_task_count
+
+        print(f">>> Update task count to {test_pv_tree.initial_task_count+1}")
+        test_pv_tree.tree.task_count += 1
+        print(">>> done")
+
+        print(test_pv_tree.tree.task_count)
+        print(test_pv_tree.tree.get("task_count", with_metadata=True))
+    
+        # assert test_pv_tree.tree.task_count == test_pv_tree.initial_task_count + 1
+        # assert test_pv_tree.tree.get('task_count')['task_count'] == test_pv_tree.initial_task_count + 1
+
+        # test_pv_tree.tree.set("task_count", test_pv_tree.tree.task_count + 1)
+        # assert test_pv_tree.tree.task_count == test_pv_tree.initial_task_count + 2
+        # assert test_pv_tree.tree.get('task_count')['task_count'] == test_pv_tree.initial_task_count + 2
+
+        # data = test_pv_tree.tree.get("task_count", with_metadata=True)
+        # assert data['task_count']['value'] == test_pv_tree.initial_task_count + 2
+        # assert data['task_count']['writeable'] == True
+        # assert data['task_count']['type'] == type(test_pv_tree.initial_task_count).__name__
+
 

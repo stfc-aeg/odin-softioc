@@ -7,10 +7,12 @@ is not required.
 Tim Nicholls, STFC Detector Systems Software Group.
 """
 from odin.adapters.parameter_tree import (
-    ParameterAccessor, ParameterTree, ParameterTreeError
+    ParameterAccessor,
+    ParameterTree,
+    ParameterTreeError,
 )
 
-__all__ = ['PvParameterAccessor', 'PvParameterTree', 'ParameterTreeError']
+__all__ = ["PvParameterAccessor", "PvParameterTree", "ParameterTreeError"]
 
 
 class PvParameterAccessor(ParameterAccessor):
@@ -21,8 +23,30 @@ class PvParameterAccessor(ParameterAccessor):
     metadata fields are implemented.
     """
 
-    #def __init__(self, path, getter=None, setter=None, **kwargs):
-    def __init__(self, name, pv_name, setter=None, initial_value=None, param_type=None, **kwargs):
+    out_record_types = {
+        "int": "longOut",
+        "float": "aOut",
+        "bool": "boolOut",
+        "str": "longStringOut",
+    }
+    in_record_types = {
+        "int": "longIn",
+        "float": "aIn",
+        "bool": "boolIn",
+        "str": "longStringIn",
+    }
+
+    def __init__(
+        self,
+        name,
+        pv_name,
+        on_get=None,
+        on_set=None,
+        writeable=False,
+        initial_value=None,
+        param_type=None,
+        **kwargs,
+    ):
         """Initialise the ParameterAccessor instance.
 
         This constructor initialises the ParameterAccessor instance, storing the path of the
@@ -39,7 +63,8 @@ class PvParameterAccessor(ParameterAccessor):
         self._name = name
         self._pv_name = pv_name
         self._value = initial_value
-        self._setter = setter
+        self._on_get = on_get
+        self._on_set = on_set
 
         self._pv = None
 
@@ -47,71 +72,131 @@ class PvParameterAccessor(ParameterAccessor):
         if param_type:
             self._type = param_type
         elif initial_value:
-            self._type = type(param_type)
+            self._type = type(initial_value)
         else:
             raise ParameterTreeError(
                 f"Cannot create parameter accessor {name} without type or initial value"
             )
 
         # Initialise the superclass with the specified arguments
-        super(PvParameterAccessor, self).__init__(name, self._get, self._set, **kwargs)
+        super(PvParameterAccessor, self).__init__(
+            name + "/", self._get, self._set, **kwargs
+        )
+
+        # Since _get and _set accessors have been passed to the superclass, the parameter will
+        # be interpreted as writeable. Override this based on the specified writeable argument
+        self.metadata["writeable"] = writeable
 
         # Set the type metadata fields based on the resolved tyoe
         self.metadata["type"] = self._type.__name__
 
     def bind(self, builder):
+        print(f"**** Binding PV at {self._pv_name} with metadata {self.metadata}")
 
-        print(f"Binding PV at {self._pv_name}")
-        self._pv = builder.longOut(
-            self._pv_name, initial_value=self._value, on_update=self._inner_set
-        )
+        builder_kwargs = {"initial_value": self._get()}
+        try:
+            if self.is_writeable:  # metadata["writeable"]:
+                record_type = self.out_record_types[self.metadata["type"]]
+                builder_kwargs["on_update"] = self._inner_set
+            else:
+                record_type = self.in_record_types[self.metadata["type"]]
+
+        except KeyError:
+            raise ParameterTreeError(
+                f"Unable to bind PV {self._pv_name} with unsupported type {self.metadata['type']}"
+            )
+        print(f"     Record type is : {record_type}")
+        self._pv = getattr(builder, record_type)(self._pv_name, **builder_kwargs)
+
+    def update(self):
+        if self.is_external:
+            value = self._on_get()
+            if value != self._value and self._pv:
+                print(f"Updating PV of param {self._name} with new value {value}")
+                self._pv.set(value, process=False)
+            self._value = value
+
+    @property
+    def is_external(self):
+        return callable(self._on_get)
+
+    @property
+    def is_writeable(self):
+        return self.metadata["writeable"]
 
     def _get(self):
+        if self.is_external:
+            self._value = self._on_get()
         return self._value
 
     def _set(self, value):
         if self._pv:
-            print(f"Updating PV {self._pv_name} with value {value}")
+            print(f"Setting PV {self._pv_name} to value {value}")
             self._pv.set(value)
+            if not self.is_writeable:
+                self._inner_set(value)
         else:
             self._inner_set(value)
 
     def _inner_set(self, value):
         print(f"Inner set called for {self._name} with value {value}")
         self._value = value
-        if callable(self._setter):
-            self._setter(value)
+        if callable(self._on_set):
+            self._on_set(value)
 
 
 class PvBoundTree(object):
-
     def __init__(self, name=""):
-
         print(f"PVBoundTree {name}: init called")
         self.__dict__["name"] = name
         self.__dict__["bound_params"] = {}
+        self.__dict__["external_params"] = []
+        self.__dict__["subtrees"] = []
+
+    def add_subtree(self, name, subtree):
+        self.__dict__[name] = subtree
+        self.subtrees.append(name)
 
     def bind(self, name, param):
-
         self.bound_params[name] = param
 
-    def __getattribute__(self, name):
+        if type(param) is PvParameterAccessor and param.is_external:
+            print(f"*@*@*@ PVBoundTree {self.name}: PV param {name} is external")
+            self.external_params.append(name)
 
-        if (name != '__dict__' and
-            "bound_params" in self.__dict__ and
-            name in self.__dict__["bound_params"]):
-            print(f"PVBoundTree {self.name}: getting bound parameter {name}")
+        if type(param) is ParameterAccessor and callable(param._get):
+            print(f"*@*@*@ PVBoundTree {self.name}: param {name} has callable get")
+            self.external_params.append(name)
+
+    def update(self, name):
+
+        if name in self.external_params:
+            if type(self.bound_params[name]) is PvParameterAccessor:
+                print(f"Updating external bound param {name}")
+                self.bound_params[name].update()
+
+    def __getattribute__(self, name):
+        if (
+            name != "__dict__"
+            and "bound_params" in self.__dict__
+            and name in self.__dict__["bound_params"]
+        ):
+            # print(f"PVBoundTree {self.name}: getting bound parameter {name}")
             return self.bound_params[name].get()
         else:
             return super().__getattribute__(name)
 
     def __setattr__(self, name, value):
-
         if name in self.bound_params:
-            print(f"PVBoundTree {self.name}: setting bound parameter {name} to {value}")
-            self.bound_params[name].set(value)
+            # print(f"PVBoundTree {self.name}: setting bound parameter {name} to {value}")
+            if type(self.bound_params[name]) is PvParameterAccessor:
+                self.bound_params[name]._set(value)
+            else:
+                self.bound_params[name].set(value)
         else:
-            print(f"PVBoundTree {self.name}: setting unbound parameter {name} to {value}")
+            # print(
+            #     f"PVBoundTree {self.name}: setting unbound parameter {name} to {value}"
+            # )
             super().__setattr__(name, value)
 
 
@@ -138,34 +223,57 @@ class PvParameterTree(PvBoundTree, ParameterTree):
         ParameterTree.__init__(self, tree, mutable=False)
 
         self._builder = builder
+        self._has_external_params = False
 
         self._bind_tree(self._tree, self)
 
-    def _bind_tree(self, node, subtree, path=[]):
+    def has_external_params(self):
+        return self._has_external_params
 
+    def update_external_params(self, tree=None):
+        if not tree:
+            tree = self
+
+        print(f"Update external params on subtree {tree.name}: {tree.external_params}")
+        for external_param in tree.external_params:
+            tree.update(external_param)
+
+        for subtree_name in tree.subtrees:
+            self.update_external_params(getattr(tree, subtree_name))
+
+    def _bind_tree(self, node, tree, path=[]):
         def join_path(p):
-            return '/'.join(p)
+            return "/".join(p)
 
         if isinstance(node, PvParameterAccessor):
-            print(f"Binding param {node._name} PV {node._pv_name} at path {join_path(path)}")
+            print(
+                f"Binding param {node._name} PV {node._pv_name} at path {join_path(path)}"
+            )
             if self._builder:
                 node.bind(self._builder)
-            subtree.bind(node._name, node)
+            tree.bind(node._name, node)
 
         elif isinstance(node, ParameterAccessor):
             name = path[-1] if len(path) else "/"
             print(f"Binding ParameterAccessor {name} at path {join_path(path)}")
-            subtree.bind(name, node)
+            tree.bind(name, node)
 
         elif isinstance(node, dict):
             if len(path):
                 subtree_name = path[-1]
-                print(f"subtree {subtree_name} at path {join_path(path)}: {node}")
-                setattr(subtree, subtree_name, PvBoundTree(join_path(path)))
-                subtree = getattr(subtree, subtree_name)
+                print(
+                    f"\n>>>> Binding subtree {subtree_name} into parent of type {type(tree)} at path {join_path(path)}: {node}"
+                )
+                new_subtree = PvBoundTree(join_path(path))
+                tree.add_subtree(subtree_name, new_subtree)
+                tree = new_subtree
             for k, v in node.items():
-                self._bind_tree(v, subtree, path + [k])
+                self._bind_tree(v, tree, path + [k])
 
         else:
-            print(f"Binding non-PV, non-subtree param {path[-1]} type {type(node)} at path {join_path(path)}")
-            setattr(subtree, path[-1], node)
+            print(
+                f"Binding non-PV, non-subtree param {path[-1]} type {type(node)} at path {join_path(path)}"
+            )
+            setattr(tree, path[-1], node)
+
+        self._has_external_params |= bool(tree.external_params)

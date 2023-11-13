@@ -55,25 +55,31 @@ class SoftIocController():
         # Set the background task counter to zero
         self.background_task_counter = 0
 
+        self.access_count = 0
+
         logging.debug("Setting IOC device prefix to %s", self.ioc_device_prefix)
         builder.SetDeviceName(self.ioc_device_prefix)
 
         # Build a parameter tree for the background task
-        self.bg_task_tree = PvParameterTree({
-            'task_count': (lambda: self.background_task_counter, None),
-            'enable': (lambda: self.background_task_enable, self.set_task_enable),
-            'interval': (lambda: self.background_task_interval, self.set_task_interval),
-        })
+        # self.bg_task_tree = PvParameterTree({
+        #     'task_count': (lambda: self.background_task_counter, None),
+        #     'enable': (lambda: self.background_task_enable, self.set_task_enable),
+        #     'interval': (lambda: self.background_task_interval, self.set_task_interval),
+        # })
 
         # Store all information in a parameter tree
         self.param_tree = PvParameterTree({
             'task_count': PvParameterAccessor(
-                'task_count', "BG-TASK-COUNT", initial_value=0, param_type=int
+                'task_count', "BG-TASK-COUNT", initial_value=0, param_type=int, writeable=True
+            ),
+            'access_count': PvParameterAccessor(
+                'access_count', "ACCESS-COUNT", writeable=True, on_get=self.get_access_count,
+                on_set=self.set_access_count, param_type=int
             ),
             'odin_version': version_info['version'],
             'tornado_version': tornado.version,
             'server_uptime': (self.get_server_uptime, None),
-            'background_task': self.bg_task_tree,
+            #'background_task': self.bg_task_tree,
             'ioc_device_prefix': self.ioc_device_prefix,
         }, builder)
 
@@ -150,7 +156,8 @@ class SoftIocController():
             # self.pv_task_count.set(self.background_task_counter)
             # self.pv_task_interval.set(self.background_task_interval, process=False)
             # self.pv_task_enable.set(self.background_task_enable, process=False)
-            await asyncio.sleep(0.1)
+            self.param_tree.update_external_params()
+            await asyncio.sleep(1.0)
 
     def get(self, path):
         """Get parameters from the parameter tree.
@@ -185,6 +192,18 @@ class SoftIocController():
         correctly.
         """
         self.stop_background_task()
+
+    def get_access_count(self):
+
+        logging.debug("Getting access count value %d", self.access_count)
+        value = self.access_count
+        self.access_count += 1
+        return value
+
+    def set_access_count(self, value):
+
+        logging.debug("Setting access count to %d", value)
+        self.access_count = value
 
     def get_server_uptime(self):
         """Get the application uptime.
